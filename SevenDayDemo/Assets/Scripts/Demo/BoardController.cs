@@ -39,7 +39,39 @@ public sealed class BoardController : MonoBehaviour
     {
         _grid = new DraggableModule[width, height];
     }
+    private void Start()
+    {
+        _score = 0;
+        _damageText?.SetText(_score.ToString());
+        OnTurnResolved += exploded =>
+        {
+            // 教学关结束前，你可以先不施压，避免干扰首爆
+            if (!tutorialDone)
+            {
+                if (exploded) tutorialDone = true; // 首次爆发后进入正常循环
+                return;
+            }
 
+            // ✅ 结算点1：回合结束就检查满盘
+            if (IsBoardFull())
+            {
+                GameOver();
+                return;
+            }
+
+            ApplyPressure(exploded);
+
+            // ✅ 结算点2：施压生成后再检查一次
+            if (IsBoardFull())
+            {
+                GameOver();
+                return;
+            }
+        };
+
+        if (useIntroLayout) SpawnIntroLayout();
+        else SpawnRandomLayout(); // 你原来的随机生成
+    }
     //暂时不用
     private void SpawnRandomLayout()
     {
@@ -67,26 +99,6 @@ public sealed class BoardController : MonoBehaviour
             var sr = m.GetComponent<SpriteRenderer>();
             if (sr != null) sr.color = type == 0 ? Color.white : (type == 1 ? Color.gray : Color.black);
         }
-    }
-
-    private void Start()
-    {
-        _score = 0;
-        _damageText?.SetText(_score.ToString());
-        OnTurnResolved += exploded =>
-        {
-            // 教学关结束前，你可以先不施压，避免干扰首爆
-            if (!tutorialDone)
-            {
-                if (exploded) tutorialDone = true; // 首次爆发后进入正常循环
-                return;
-            }
-
-            ApplyPressure(exploded);
-        };
-
-        if (useIntroLayout) SpawnIntroLayout();
-        else SpawnRandomLayout(); // 你原来的随机生成
     }
 
     public Vector3 CellToWorld(Vector2Int c)
@@ -391,6 +403,15 @@ public sealed class BoardController : MonoBehaviour
         var sr = m.GetComponent<SpriteRenderer>();
         if (sr != null) sr.color = pick.type == 0 ? Color.white : (pick.type == 1 ? Color.gray : Color.black);
         
+        return true;
+    }
+    public bool IsBoardFull()
+    {
+        for (int x = 0; x < width; x++)
+        for (int y = 0; y < height; y++)
+            if (_grid[x, y] == null)
+                return false;
+
         return true;
     }
 }
