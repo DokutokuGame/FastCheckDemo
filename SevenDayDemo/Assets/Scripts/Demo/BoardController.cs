@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using TMPro;
 using UnityEngine;
 using Random = UnityEngine.Random;
 
@@ -30,6 +31,8 @@ public sealed class BoardController : MonoBehaviour
     public Vector2Int introTargetCell = new Vector2Int(2, 2); // 缺口
     public DraggableModule modulePrefab;
     public bool useIntroLayout = true;
+
+    public TextMeshProUGUI _damageText;
     private void Awake()
     {
         _grid = new DraggableModule[width, height];
@@ -64,6 +67,8 @@ public sealed class BoardController : MonoBehaviour
     }
     private void Start()
     {
+        _damageText?.SetText("0");
+        
         if (useIntroLayout) SpawnIntroLayout();
         else SpawnRandomLayout(); // 你原来的随机生成
     }
@@ -175,7 +180,7 @@ public sealed class BoardController : MonoBehaviour
 
         // TODO: 伤害文字/音效/屏幕抖动（先占位日志）
         Debug.Log($"爆发! Count={cells.Count}, Damage={damage}");
-
+        _damageText?.SetText(damage.ToString());
         // 如果你有 Cinemachine，可在这里触发 Impulse；没有也能先用简易抖动
         SimpleCameraShake.Instance?.Shake(0.15f, 0.25f);
     }

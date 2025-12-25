@@ -35,6 +35,8 @@ public sealed class DraggableModule : MonoBehaviour
 
     private void OnMouseDown()
     {
+        FakeDragIntroLoop.Instance?.CancelIfAnimating(transform);
+        
         if (_board == null) return;
         _dragging = true;
 

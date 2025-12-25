@@ -3,6 +3,8 @@ using DG.Tweening;
 
 public class FakeDragIntroLoop : MonoBehaviour
 {
+    public static FakeDragIntroLoop Instance { get; private set; }
+
     public BoardController board;
     public float firstDelay = 0.8f;
     public float repeatInterval = 2.0f;
@@ -14,6 +16,16 @@ public class FakeDragIntroLoop : MonoBehaviour
 
     bool _stopped;
 
+    // 关键：记住“演示开始前”的状态
+    Transform _active;
+    Vector3 _startPos;
+    Vector3 _startScale;
+
+    void Awake()
+    {
+        Instance = this;
+    }
+
     void Start()
     {
         ScheduleNext(firstDelay);
@@ -22,8 +34,44 @@ public class FakeDragIntroLoop : MonoBehaviour
     void Update()
     {
         if (_stopped) return;
+
         if (Input.GetMouseButtonDown(0) || Input.touchCount > 0)
-            StopForever();
+        {
+            StopForeverAndRestore(); // 点任何地方都停并恢复
+        }
+    }
+
+    public void CancelIfAnimating(Transform t)
+    {
+        if (_stopped) return;
+        if (_active != t) return;
+
+        StopForeverAndRestore();
+    }
+
+    void StopForeverAndRestore()
+    {
+        _stopped = true;
+        DOTween.Kill(this);
+
+        if (_active != null)
+        {
+            DOTween.Kill(_active);
+
+            // 恢复位置/缩放
+            _active.position = _startPos;
+            _active.localScale = _startScale;
+
+            // 恢复格子占用（避免 OnMouseDown 已 ClearCell）
+            if (board != null && board.introHintModule != null)
+            {
+                var cell = board.introHintModule.CurrentCell;
+                if (cell.x >= 0 && cell.y >= 0 && board.IsCellEmpty(cell))
+                    board.PlaceModule(board.introHintModule, cell);
+            }
+
+            _active = null;
+        }
     }
 
     void ScheduleNext(float delay)
@@ -37,34 +85,26 @@ public class FakeDragIntroLoop : MonoBehaviour
                 if (board == null || board.introHintModule == null) return;
 
                 PlayOnce(board.introHintModule.transform);
-
                 ScheduleNext(repeatInterval);
             });
     }
 
     void PlayOnce(Transform t)
     {
-        DOTween.Kill(t); // 防叠加
+        DOTween.Kill(t);
 
-        Vector3 startPos = t.position;
+        _active = t;
+        _startPos = t.position;
+        _startScale = t.localScale;
+
         Vector3 targetPos = board.CellToWorld(board.introTargetCell);
+        Vector3 toward = (targetPos - _startPos).normalized * (board.cellSize * 2 * 0.8f);
+        Vector3 endPos = _startPos + toward;
 
-        // 只“拖向目标一小段”，起到示范作用，不真的放过去
-        Vector3 toward = (targetPos - startPos).normalized * (board.cellSize * 2 * 0.8f);
-        Vector3 endPos = startPos + toward;
-
-        Sequence seq = DOTween.Sequence().SetTarget(t);
-        seq.Append(t.DOScale(liftScale, liftTime).SetEase(Ease.OutQuad));
+        Sequence seq = DOTween.Sequence().SetTarget(t).SetId(t);
+        seq.Append(t.DOScale(_startScale * liftScale, liftTime).SetEase(Ease.OutQuad));
         seq.Append(t.DOMove(endPos, dragTime).SetEase(Ease.OutQuad));
-        seq.Append(t.DOMove(startPos, returnTime).SetEase(Ease.InQuad));
-        seq.Append(t.DOScale(1f, liftTime).SetEase(Ease.OutQuad));
-    }
-
-    void StopForever()
-    {
-        _stopped = true;
-        DOTween.Kill(this);
-        if (board != null && board.introHintModule != null)
-            DOTween.Kill(board.introHintModule.transform);
+        seq.Append(t.DOMove(_startPos, returnTime).SetEase(Ease.InQuad));
+        seq.Append(t.DOScale(_startScale, liftTime).SetEase(Ease.OutQuad));
     }
 }

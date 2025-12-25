@@ -615,8 +615,8 @@ MonoBehaviour:
   m_fontSizeMin: 18
   m_fontSizeMax: 72
   m_fontStyle: 0
-  m_HorizontalAlignment: 1
-  m_VerticalAlignment: 256
+  m_HorizontalAlignment: 2
+  m_VerticalAlignment: 512
   m_textAlignment: 65535
   m_characterSpacing: 0
   m_characterHorizontalScale: 1
@@ -740,6 +740,7 @@ MonoBehaviour:
   introTargetCell: {x: 2, y: 2}
   modulePrefab: {fileID: 7984618350473482499, guid: 49d88a00bf52aa9438399c5f111c68d2, type: 3}
   useIntroLayout: 1
+  _damageText: {fileID: 917007958}
 --- !u!114 &970692697
 MonoBehaviour:
   m_ObjectHideFlags: 0
