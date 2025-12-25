@@ -1,0 +1,180 @@
+using System;
+using System.Collections.Generic;
+using UnityEngine;
+using Random = UnityEngine.Random;
+
+public sealed class BoardController : MonoBehaviour
+{
+    [Header("Board")]
+    public int width = 5;
+    public int height = 5;
+    public float cellSize = 1.2f;
+    public Vector2 origin = new Vector2(-2.4f, -2.4f); // 左下角世界坐标
+
+    [Header("Explosion / Damage")]
+    public int baseDamage = 100;
+    public AnimationCurve damageCurve = AnimationCurve.Linear(3, 1, 12, 6); // count -> multiplier
+    public float explodeDelay = 0.05f;
+
+    private DraggableModule[,] _grid;
+
+    private static readonly Vector2Int[] Neigh4 =
+    {
+        new Vector2Int( 1, 0),
+        new Vector2Int(-1, 0),
+        new Vector2Int( 0, 1),
+        new Vector2Int( 0,-1),
+    };
+    
+    public DraggableModule modulePrefab;
+    private void Awake()
+    {
+        _grid = new DraggableModule[width, height];
+    }
+
+    private void Start()
+    {
+        // Demo：丢 10 个模块，类型 0/1/2
+        for (int i = 0; i < 10; i++)
+        {
+            var m = Instantiate(modulePrefab);
+            int type = i % 3;
+            var spawn = new Vector2Int(Random.Range(0, width), Random.Range(0, height));
+            m.Init(this, type, spawn);
+            // 颜色区分（也可以放 ModuleView）
+            var sr = m.GetComponent<SpriteRenderer>();
+            if (sr != null) sr.color = type == 0 ? Color.white : (type == 1 ? Color.gray : Color.black);
+        }
+    }
+
+    public Vector3 CellToWorld(Vector2Int c)
+    {
+        return new Vector3(origin.x + c.x * cellSize, origin.y + c.y * cellSize, 0);
+    }
+
+    public bool TryWorldToCell(Vector3 world, out Vector2Int cell)
+    {
+        float fx = (world.x - origin.x) / cellSize;
+        float fy = (world.y - origin.y) / cellSize;
+        int x = Mathf.RoundToInt(fx);
+        int y = Mathf.RoundToInt(fy);
+
+        if (x < 0 || x >= width || y < 0 || y >= height)
+        {
+            cell = default;
+            return false;
+        }
+
+        cell = new Vector2Int(x, y);
+        return true;
+    }
+
+    public bool IsCellEmpty(Vector2Int c) => _grid[c.x, c.y] == null;
+
+    public void PlaceModule(DraggableModule m, Vector2Int cell)
+    {
+        _grid[cell.x, cell.y] = m;
+        m.CurrentCell = cell;
+        m.transform.position = CellToWorld(cell);
+    }
+
+    public void ClearCell(Vector2Int cell)
+    {
+        _grid[cell.x, cell.y] = null;
+    }
+
+    public void ResolveChainsFrom(Vector2Int startCell)
+    {
+        // 只检测 startCell 所在类型的连通块（4 邻接）
+        var start = _grid[startCell.x, startCell.y];
+        if (start == null) return;
+
+        int type = start.TypeId;
+        var cluster = FloodFillSameType(startCell, type);
+
+        if (cluster.Count >= 3)
+        {
+            // 爆发：清除 + 伤害反馈（指数化）
+            int dmg = ComputeDamage(cluster.Count);
+            StartCoroutine(ExplodeRoutine(cluster, dmg));
+        }
+        // 否则不做任何事：失败“冷”
+    }
+
+    private List<Vector2Int> FloodFillSameType(Vector2Int start, int type)
+    {
+        var result = new List<Vector2Int>(16);
+        var q = new Queue<Vector2Int>();
+        var visited = new HashSet<Vector2Int>();
+
+        q.Enqueue(start);
+        visited.Add(start);
+
+        while (q.Count > 0)
+        {
+            var c = q.Dequeue();
+            var m = _grid[c.x, c.y];
+            if (m == null || m.TypeId != type) continue;
+
+            result.Add(c);
+
+            for (int i = 0; i < Neigh4.Length; i++)
+            {
+                var n = c + Neigh4[i];
+                if (n.x < 0 || n.x >= width || n.y < 0 || n.y >= height) continue;
+                if (visited.Add(n))
+                    q.Enqueue(n);
+            }
+        }
+
+        return result;
+    }
+
+    private int ComputeDamage(int count)
+    {
+        // 关键：不要线性。让 3、6、9 有“世界差异”
+        float mult = damageCurve.Evaluate(count);
+        return Mathf.RoundToInt(baseDamage * mult);
+    }
+
+    private System.Collections.IEnumerator ExplodeRoutine(List<Vector2Int> cells, int damage)
+    {
+        // “吵”：先轻微延迟+逐个清除（带节奏），再给伤害与抖动
+        for (int i = 0; i < cells.Count; i++)
+        {
+            var c = cells[i];
+            var m = _grid[c.x, c.y];
+            if (m != null)
+            {
+                ClearCell(c);
+                Destroy(m.gameObject);
+            }
+            yield return new WaitForSeconds(explodeDelay);
+        }
+
+        // TODO: 伤害文字/音效/屏幕抖动（先占位日志）
+        Debug.Log($"爆发! Count={cells.Count}, Damage={damage}");
+
+        // 如果你有 Cinemachine，可在这里触发 Impulse；没有也能先用简易抖动
+        SimpleCameraShake.Instance?.Shake(0.15f, 0.25f);
+    }
+    private void OnDrawGizmos()
+    {
+        Gizmos.color = new Color(1f, 1f, 1f, 0.15f);
+
+        for (int x = 0; x < width; x++)
+        for (int y = 0; y < height; y++)
+        {
+            Vector3 p = new Vector3(origin.x + x * cellSize, origin.y + y * cellSize, 0);
+            Gizmos.DrawWireCube(p, new Vector3(cellSize * 0.95f, cellSize * 0.95f, 0.01f));
+        }
+    }
+    private void Reset()
+    {
+        // 让棋盘中心在 (0,0)
+        origin = new Vector2(
+            -((width - 1) * cellSize) * 0.5f,
+            -((height - 1) * cellSize) * 0.5f
+        );
+    }
+}
