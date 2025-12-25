@@ -107,4 +107,22 @@ public class FakeDragIntroLoop : MonoBehaviour
         seq.Append(t.DOMove(_startPos, returnTime).SetEase(Ease.InQuad));
         seq.Append(t.DOScale(_startScale, liftTime).SetEase(Ease.OutQuad));
     }
+    public void InterruptForUserDrag(Transform t)
+    {
+        if (_active != t) { StopForever(); return; }
+
+        // 只处理演示对象：杀 tween + 归位
+        DOTween.Kill(t);
+        t.position = _startPos;
+        t.localScale = _startScale;
+
+        StopForever(); // 停止后续循环提示，但不做其它副作用
+    }
+
+    private void StopForever()
+    {
+        _stopped = true;
+        DOTween.Kill(this);
+        _active = null;
+    }
 }
