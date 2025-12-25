@@ -34,12 +34,24 @@ public sealed class BoardController : MonoBehaviour
 
     private void Start()
     {
+        List<Vector2Int> allSpawns = new List<Vector2Int>();
+
+        for (int x = 0; x < width; x++)
+        for (int y = 0; y < height; y++)
+            allSpawns.Add(new Vector2Int(x, y));
+
+        // Fisher–Yates shuffle
+        for (int i = allSpawns.Count - 1; i > 0; i--)
+        {
+            int j = Random.Range(0, i + 1);
+            (allSpawns[i], allSpawns[j]) = (allSpawns[j], allSpawns[i]);
+        }
         // Demo：丢 10 个模块，类型 0/1/2
         for (int i = 0; i < 10; i++)
         {
             var m = Instantiate(modulePrefab);
             int type = i % 3;
-            var spawn = new Vector2Int(Random.Range(0, width), Random.Range(0, height));
+            var spawn = allSpawns[i];
             m.Init(this, type, spawn);
             // 颜色区分（也可以放 ModuleView）
             var sr = m.GetComponent<SpriteRenderer>();
