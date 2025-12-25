@@ -147,7 +147,8 @@ public sealed class BoardController : MonoBehaviour
         }
 
         int type = start.TypeId;
-        var cluster = FloodFillSameType(startCell, type);
+        var cluster = CollectLineMatches(startCell, type);
+        // cluster = FloodFillSameType(startCell, type);
 
         if (cluster.Count >= 3)
         {
@@ -159,7 +160,63 @@ public sealed class BoardController : MonoBehaviour
         OnTurnResolved?.Invoke(false);
         return false;
     }
+    // 直线消除
+    private List<Vector2Int> CollectLineMatches(Vector2Int origin, int type)
+    {
+        // 横向连续
+        var horiz = new List<Vector2Int>();
+        horiz.Add(origin);
 
+        // 向左
+        for (int x = origin.x - 1; x >= 0; x--)
+        {
+            var m = _grid[x, origin.y];
+            if (m == null || m.TypeId != type) break;
+            horiz.Add(new Vector2Int(x, origin.y));
+        }
+        // 向右
+        for (int x = origin.x + 1; x < width; x++)
+        {
+            var m = _grid[x, origin.y];
+            if (m == null || m.TypeId != type) break;
+            horiz.Add(new Vector2Int(x, origin.y));
+        }
+
+        // 纵向连续
+        var vert = new List<Vector2Int>();
+        vert.Add(origin);
+
+        // 向下
+        for (int y = origin.y - 1; y >= 0; y--)
+        {
+            var m = _grid[origin.x, y];
+            if (m == null || m.TypeId != type) break;
+            vert.Add(new Vector2Int(origin.x, y));
+        }
+        // 向上
+        for (int y = origin.y + 1; y < height; y++)
+        {
+            var m = _grid[origin.x, y];
+            if (m == null || m.TypeId != type) break;
+            vert.Add(new Vector2Int(origin.x, y));
+        }
+
+        // 只有“同一直线连续 >=3”才算
+        bool horizOk = horiz.Count >= 3;
+        bool vertOk  = vert.Count >= 3;
+
+        if (!horizOk && !vertOk)
+            return new List<Vector2Int>(0);
+
+        // 允许交叉：横线 + 竖线并集
+        var set = new HashSet<Vector2Int>();
+        if (horizOk) for (int i = 0; i < horiz.Count; i++) set.Add(horiz[i]);
+        if (vertOk)  for (int i = 0; i < vert.Count; i++)  set.Add(vert[i]);
+
+        return new List<Vector2Int>(set);
+    }
+
+    //洪水填充
     private List<Vector2Int> FloodFillSameType(Vector2Int start, int type)
     {
         var result = new List<Vector2Int>(16);
@@ -329,49 +386,37 @@ public sealed class BoardController : MonoBehaviour
         // Demo 阶段最小实现：直接重开第一局或随机局
         // ClearBoard(); SpawnIntroLayout(); 或者显示一个简单文本
     }
-
-    private bool WouldExplodeIfSpawn(Vector2Int cell, int type)
+    private List<Vector2Int> CollectLineMatches_Virtual(Vector2Int origin, int type, Vector2Int virtualCell)
     {
-        // cell 必须是空
-        if (_grid[cell.x, cell.y] != null) return true;
-
-        // BFS/FloodFill：把 cell 视为 type，其余格子照常
-        var q = new Queue<Vector2Int>();
-        var visited = new HashSet<Vector2Int>();
-
-        q.Enqueue(cell);
-        visited.Add(cell);
-
-        int count = 0;
-
-        while (q.Count > 0)
+        bool IsSame(int x, int y)
         {
-            var c = q.Dequeue();
-
-            // 判断该格子的“有效类型”
-            int t;
-            if (c == cell) t = type;
-            else
-            {
-                var m = _grid[c.x, c.y];
-                if (m == null) continue;
-                t = m.TypeId;
-            }
-
-            if (t != type) continue;
-
-            count++;
-            if (count >= 3) return true; // 一旦达到 3，立刻判定会爆发
-
-            for (int i = 0; i < Neigh4.Length; i++)
-            {
-                var n = c + Neigh4[i];
-                if (n.x < 0 || n.x >= width || n.y < 0 || n.y >= height) continue;
-                if (visited.Add(n)) q.Enqueue(n);
-            }
+            if (x == virtualCell.x && y == virtualCell.y) return true;
+            var m = _grid[x, y];
+            return m != null && m.TypeId == type;
         }
 
-        return false;
+        var horiz = new List<Vector2Int> { origin };
+        for (int x = origin.x - 1; x >= 0 && IsSame(x, origin.y); x--) horiz.Add(new Vector2Int(x, origin.y));
+        for (int x = origin.x + 1; x < width && IsSame(x, origin.y); x++) horiz.Add(new Vector2Int(x, origin.y));
+
+        var vert = new List<Vector2Int> { origin };
+        for (int y = origin.y - 1; y >= 0 && IsSame(origin.x, y); y--) vert.Add(new Vector2Int(origin.x, y));
+        for (int y = origin.y + 1; y < height && IsSame(origin.x, y); y++) vert.Add(new Vector2Int(origin.x, y));
+
+        bool horizOk = horiz.Count >= 3;
+        bool vertOk  = vert.Count >= 3;
+        if (!horizOk && !vertOk) return new List<Vector2Int>(0);
+
+        var set = new HashSet<Vector2Int>();
+        if (horizOk) for (int i = 0; i < horiz.Count; i++) set.Add(horiz[i]);
+        if (vertOk)  for (int i = 0; i < vert.Count; i++)  set.Add(vert[i]);
+        return new List<Vector2Int>(set);
+    }
+    private bool WouldExplodeIfSpawn(Vector2Int cell, int type)
+    {
+        if (_grid[cell.x, cell.y] != null) return true; // 不是空格就别生成
+        var matched = CollectLineMatches_Virtual(cell, type, cell);
+        return matched.Count >= 3;
     }
 
     public bool SpawnOneRandomInEmpty_NoInstantExplode()
