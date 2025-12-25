@@ -26,13 +26,17 @@ public sealed class BoardController : MonoBehaviour
         new Vector2Int( 0,-1),
     };
     
+    public DraggableModule introHintModule;
+    public Vector2Int introTargetCell = new Vector2Int(2, 2); // 缺口
     public DraggableModule modulePrefab;
+    public bool useIntroLayout = true;
     private void Awake()
     {
         _grid = new DraggableModule[width, height];
     }
 
-    private void Start()
+    //暂时不用
+    private void SpawnRandomLayout()
     {
         List<Vector2Int> allSpawns = new List<Vector2Int>();
 
@@ -57,6 +61,11 @@ public sealed class BoardController : MonoBehaviour
             var sr = m.GetComponent<SpriteRenderer>();
             if (sr != null) sr.color = type == 0 ? Color.white : (type == 1 ? Color.gray : Color.black);
         }
+    }
+    private void Start()
+    {
+        if (useIntroLayout) SpawnIntroLayout();
+        else SpawnRandomLayout(); // 你原来的随机生成
     }
 
     public Vector3 CellToWorld(Vector2Int c)
@@ -188,5 +197,49 @@ public sealed class BoardController : MonoBehaviour
             -((width - 1) * cellSize) * 0.5f,
             -((height - 1) * cellSize) * 0.5f
         );
+    }
+    private void ClearBoard()
+    {
+        for (int x = 0; x < width; x++)
+        for (int y = 0; y < height; y++)
+        {
+            var m = _grid[x, y];
+            if (m != null) Destroy(m.gameObject);
+            _grid[x, y] = null;
+        }
+    }
+
+    private void SpawnIntroLayout()
+    {
+        ClearBoard();
+
+        int[,] map = new int[5,5]
+        {
+            // x: 0  1  2  3  4
+            { -1,-1,-1,-1,-1 }, // y=0
+            { -1, 1, 0, 2,-1 }, // y=1
+            {  0, 0,-1, 0,-1 }, // y=2
+            { -1, 1, 0, 2,-1 }, // y=3
+            { -1,-1,-1,-1,-1 }, // y=4
+        };
+
+        for (int y = 0; y < 5; y++)
+        for (int x = 0; x < 5; x++)
+        {
+            int type = map[y, x];  // 关键：map[y,x]
+            if (type < 0) continue;
+
+            var m = Instantiate(modulePrefab);
+            m.Init(this, type, new Vector2Int(x, y));
+
+            // 颜色区分（也可以放 ModuleView）
+            var sr = m.GetComponent<SpriteRenderer>();
+            if (sr != null) sr.color = type == 0 ? Color.white : (type == 1 ? Color.gray : Color.black);
+            
+            if (x == 0 && y == 2 && type == 0)
+                introHintModule = m;
+        }
+
+        introTargetCell = new Vector2Int(2, 2);
     }
 }

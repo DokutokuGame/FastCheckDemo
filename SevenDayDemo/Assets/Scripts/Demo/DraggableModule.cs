@@ -1,3 +1,4 @@
+using DG.Tweening;
 using UnityEngine;
 
 [RequireComponent(typeof(Collider2D))]
@@ -75,6 +76,15 @@ public sealed class DraggableModule : MonoBehaviour
         transform.position = _startPos;
         if (IsInBoard(_startCell))
             _board.PlaceModule(this, _startCell);
+    }
+    void OnMouseEnter()
+    {
+        transform.DOScale(1.08f, 0.1f);
+    }
+
+    void OnMouseExit()
+    {
+        transform.DOScale(1f, 0.1f);
     }
 
     private static Vector3 GetMouseWorld()
