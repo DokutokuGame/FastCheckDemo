@@ -63,22 +63,37 @@ public sealed class DraggableModule : MonoBehaviour
         if (!_dragging) return;
         _dragging = false;
 
-        // 吸附：找到最近格
+        // 计算目标格
         if (_board.TryWorldToCell(transform.position, out var cell))
         {
+            // ✅ 规则：必须与起始格不同才算放置
+            if (IsInBoard(_startCell) && cell == _startCell)
+            {
+                // 取消：回到起点 + 恢复占用，不结算回合
+                transform.position = _startPos;
+                _board.PlaceModule(this, _startCell);
+                transform.DOPunchScale(Vector3.one * 0.08f, 0.12f, 6, 0.8f);
+                return;
+            }
+
+            // 正常放置：目标格必须为空
             if (_board.IsCellEmpty(cell))
             {
                 _board.PlaceModule(this, cell);
-                _board.ResolveChainsFrom(cell);
+                _board.ResolveChainsFrom(cell); // 回合结算（H 施压）由 Board 处理
                 return;
             }
         }
 
-        // 放置失败：冷处理，回到原位并恢复占用
+        // 放置失败：回弹并恢复占用
         transform.position = _startPos;
         if (IsInBoard(_startCell))
+        {
             _board.PlaceModule(this, _startCell);
+            transform.DOPunchScale(Vector3.one * 0.08f, 0.12f, 6, 0.8f);
+        }
     }
+
     void OnMouseEnter()
     {
         transform.DOScale(1.08f, 0.1f);
