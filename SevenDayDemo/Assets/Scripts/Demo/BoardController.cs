@@ -7,12 +7,14 @@ using Random = UnityEngine.Random;
 
 public sealed class BoardController : MonoBehaviour
 {
-    [Header("Board")] public int width = 5;
+    [Header("Board")]
+    public int width = 5;
     public int height = 5;
     public float cellSize = 1.2f;
     public Vector2 origin = new Vector2(-2.4f, -2.4f); // 左下角世界坐标
 
-    [Header("Explosion / Damage")] public int baseDamage = 100;
+    [Header("Explosion / Damage")]
+    public int baseDamage = 100;
     public AnimationCurve damageCurve = AnimationCurve.Linear(3, 1, 12, 6); // count -> multiplier
     public float explodeDelay = 0.05f;
 
@@ -33,31 +35,60 @@ public sealed class BoardController : MonoBehaviour
     public bool useIntroLayout = true;
     private bool tutorialDone = true;
 
+    [Header("UI (optional)")]
     public TextMeshProUGUI _hpText;
     public TextMeshProUGUI _chainText;
+    public TextMeshProUGUI _turnText;
+    public GameObject winPanel;
+    public GameObject losePanel;
 
-    [Header("Goal / Boss")] public int bossMaxHp = 2000;
+    [Header("Goal / Boss")]
+    public int bossMaxHp = 2000;
     private int _bossHp;
+
+    [Header("Goal / Turns")]
+    public int turnsMax = 20;
+    private int _turnsLeft;
+
+    [Header("Special Modules")]
+    [Tooltip("TypeId==3 will be treated as Bomb (cross clear).")]
+    public int bombTypeId = 3;
+
+    [Tooltip("Every N turns (player placements), guarantee one bomb spawn on the next pressure spawn. Set 0 to disable.")]
+    public int bombEveryNTurns = 5;
 
     // Turn resolve state
     private bool _resolvingTurn;
     public bool IsResolvingTurn => _resolvingTurn;
 
+    private int _turnCounter; // number of player placements resolved (excluding tutorial guard)
+
     private void Awake()
     {
         _grid = new DraggableModule[width, height];
-
         InitCell();
     }
 
     private void Start()
     {
-        _bossHp = Mathf.Max(1, bossMaxHp);
-        _hpText?.SetText(_bossHp.ToString());
-        _chainText?.SetText(string.Empty);
+        ResetRunState();
 
         if (useIntroLayout) SpawnIntroLayout();
         else SpawnRandomLayout(); // 你原来的随机生成
+    }
+
+    private void ResetRunState()
+    {
+        _bossHp = Mathf.Max(1, bossMaxHp);
+        _turnsLeft = Mathf.Max(1, turnsMax);
+        _turnCounter = 0;
+
+        _hpText?.SetText(_bossHp.ToString());
+        _turnText?.SetText(_turnsLeft.ToString());
+        _chainText?.SetText(string.Empty);
+
+        if (winPanel != null) winPanel.SetActive(false);
+        if (losePanel != null) losePanel.SetActive(false);
     }
 
     //暂时不用
@@ -85,7 +116,7 @@ public sealed class BoardController : MonoBehaviour
             m.Init(this, type, spawn);
             // 颜色区分（也可以放 ModuleView）
             var sr = m.GetComponent<SpriteRenderer>();
-            if (sr != null) sr.color = type == 0 ? Color.white : (type == 1 ? Color.gray : Color.black);
+            if (sr != null) sr.color = TypeToColor(type);
         }
     }
 
@@ -136,13 +167,88 @@ public sealed class BoardController : MonoBehaviour
         _resolvingTurn = true;
         _chainText?.SetText(string.Empty);
 
-        // Step 1: 仅放置点触发首爆（规则更清晰）
-        if (TryCollectMatchAt(placedCell, out var cluster))
+        // 放置位置可能被 Bomb 打出来的空洞影响：这里先做一次安全检查
+        if (!IsInside(placedCell))
         {
-            // 教学模式：首爆后再进入正常循环
+            _resolvingTurn = false;
+            yield break;
+        }
+
+        var placed = _grid[placedCell.x, placedCell.y];
+
+        // --- Step 0: Bomb 直接触发首爆（不依赖直线 3+） ---
+        if (placed != null && placed.TypeId == bombTypeId)
+        {
+            if (!tutorialDone) tutorialDone = true;
+
+            int chainIndex = 1;
+
+            var bombCluster = CollectBombCross(placedCell);
+            if (bombCluster.Count > 0)
+            {
+                int baseDmg = ComputeDamage(Mathf.Max(3, bombCluster.Count)); // Bomb 至少按 3 的档位给伤害
+                float chainMul = GetChainMultiplier(chainIndex);
+                int finalDmg = Mathf.RoundToInt(baseDmg * chainMul);
+
+                ApplyBossDamage(finalDmg);
+                _chainText?.SetText(string.Empty);
+
+                yield return ExplodeRoutine(bombCluster);
+
+                if (tutorialDone)
+                {
+                    ApplyPressure(true);
+                    if (IsBoardFull())
+                    {
+                        Lose();
+                        _resolvingTurn = false;
+                        yield break;
+                    }
+                }
+
+                // Bomb 后也允许继续找连锁
+                List<Vector2Int> cluster;
+                while (TryFindBestAnyMatch(out cluster))
+                {
+                    chainIndex++;
+
+                    int baseDmg2 = ComputeDamage(cluster.Count);
+                    float chainMul2 = GetChainMultiplier(chainIndex);
+                    int finalDmg2 = Mathf.RoundToInt(baseDmg2 * chainMul2);
+
+                    ApplyBossDamage(finalDmg2);
+                    _chainText?.SetText($"x{chainIndex}");
+
+                    yield return ExplodeRoutine(cluster);
+
+                    if (tutorialDone)
+                    {
+                        ApplyPressure(true);
+                        if (IsBoardFull())
+                        {
+                            Lose();
+                            _resolvingTurn = false;
+                            yield break;
+                        }
+                    }
+                }
+
+                // 回合消耗（Bomb 也算一回合）
+                ConsumeTurnAndCheckEnd();
+                _resolvingTurn = false;
+                yield break;
+            }
+
+            // Bomb 没清到任何东西（极少见）：当作普通回合
+        }
+
+        // --- Step 1: 仅放置点触发首爆（规则更清晰） ---
+        if (TryCollectMatchAt(placedCell, out var firstCluster))
+        {
             if (!tutorialDone) tutorialDone = true;
 
             int chainIndex = 0;
+            var cluster = firstCluster;
 
             while (cluster != null && cluster.Count >= 3)
             {
@@ -163,7 +269,7 @@ public sealed class BoardController : MonoBehaviour
                     ApplyPressure(true);
                     if (IsBoardFull())
                     {
-                        GameOver();
+                        Lose();
                         _resolvingTurn = false;
                         yield break;
                     }
@@ -174,7 +280,7 @@ public sealed class BoardController : MonoBehaviour
                     break;
             }
 
-            // 回合结束胜负判定
+            // 胜利判定
             if (_bossHp <= 0)
             {
                 Win();
@@ -182,6 +288,8 @@ public sealed class BoardController : MonoBehaviour
                 yield break;
             }
 
+            // 回合消耗
+            ConsumeTurnAndCheckEnd();
             _resolvingTurn = false;
             yield break;
         }
@@ -192,13 +300,35 @@ public sealed class BoardController : MonoBehaviour
             ApplyPressure(false);
             if (IsBoardFull())
             {
-                GameOver();
+                Lose();
                 _resolvingTurn = false;
                 yield break;
             }
         }
 
+        ConsumeTurnAndCheckEnd();
         _resolvingTurn = false;
+    }
+
+    private void ConsumeTurnAndCheckEnd()
+    {
+        // Tutorial 期间如果你希望不扣回合，可在这里加条件
+        _turnCounter++;
+        _turnsLeft = Mathf.Max(0, _turnsLeft - 1);
+        _turnText?.SetText(_turnsLeft.ToString());
+
+        // 先判胜
+        if (_bossHp <= 0)
+        {
+            Win();
+            return;
+        }
+
+        // 再判负：回合耗尽
+        if (_turnsLeft <= 0)
+        {
+            Lose();
+        }
     }
 
     private float GetChainMultiplier(int chainIndex)
@@ -220,11 +350,14 @@ public sealed class BoardController : MonoBehaviour
     {
         cluster = null;
 
-        if (cell.x < 0 || cell.y < 0 || cell.x >= width || cell.y >= height)
+        if (!IsInside(cell))
             return false;
 
         var start = _grid[cell.x, cell.y];
         if (start == null) return false;
+
+        // Special types don't participate in line matches
+        if (start.TypeId == bombTypeId) return false;
 
         int type = start.TypeId;
         var c = CollectLineMatches(cell, type);
@@ -247,6 +380,7 @@ public sealed class BoardController : MonoBehaviour
         {
             var m = _grid[x, y];
             if (m == null) continue;
+            if (m.TypeId == bombTypeId) continue;
 
             var c = CollectLineMatches(new Vector2Int(x, y), m.TypeId);
             if (c.Count >= 3 && c.Count > bestCount)
@@ -321,36 +455,6 @@ public sealed class BoardController : MonoBehaviour
         return new List<Vector2Int>(set);
     }
 
-    //洪水填充
-    private List<Vector2Int> FloodFillSameType(Vector2Int start, int type)
-    {
-        var result = new List<Vector2Int>(16);
-        var q = new Queue<Vector2Int>();
-        var visited = new HashSet<Vector2Int>();
-
-        q.Enqueue(start);
-        visited.Add(start);
-
-        while (q.Count > 0)
-        {
-            var c = q.Dequeue();
-            var m = _grid[c.x, c.y];
-            if (m == null || m.TypeId != type) continue;
-
-            result.Add(c);
-
-            for (int i = 0; i < Neigh4.Length; i++)
-            {
-                var n = c + Neigh4[i];
-                if (n.x < 0 || n.x >= width || n.y < 0 || n.y >= height) continue;
-                if (visited.Add(n))
-                    q.Enqueue(n);
-            }
-        }
-
-        return result;
-    }
-
     private int ComputeDamage(int count)
     {
         // 关键：不要线性。让 3、6、9 有“世界差异”
@@ -358,7 +462,7 @@ public sealed class BoardController : MonoBehaviour
         return Mathf.RoundToInt(baseDamage * mult);
     }
 
-    private System.Collections.IEnumerator ExplodeRoutine(List<Vector2Int> cells)
+    private IEnumerator ExplodeRoutine(List<Vector2Int> cells)
     {
         for (int i = 0; i < cells.Count; i++)
         {
@@ -444,9 +548,8 @@ public sealed class BoardController : MonoBehaviour
             var m = Instantiate(modulePrefab);
             m.Init(this, type, new Vector2Int(x, y));
 
-            // 颜色区分（也可以放 ModuleView）
             var sr = m.GetComponent<SpriteRenderer>();
-            if (sr != null) sr.color = type == 0 ? Color.white : (type == 1 ? Color.gray : Color.black);
+            if (sr != null) sr.color = TypeToColor(type);
 
             if (x == 0 && y == 2 && type == 0)
                 introHintModule = m;
@@ -455,14 +558,25 @@ public sealed class BoardController : MonoBehaviour
         introTargetCell = new Vector2Int(2, 2);
     }
 
-
     /// <summary>
     /// Pressure spawn used during chain resolution: prefer spawning a piece that immediately creates a line match (>=3).
     /// This is what makes "chain reactions" reliably visible in a demo, without affecting normal (non-exploded) turns.
     /// If no immediate-match candidate exists, fallback to a fully random spawn (allowing instant explode).
+    /// Also: can inject bombs periodically for controllable "tools".
     /// </summary>
     private bool SpawnOnePressurePreferMatch()
     {
+        // Bomb injection (deterministic): once every N turns, guarantee a bomb on chain-pressure.
+        if (bombEveryNTurns > 0 && _turnCounter > 0 && (_turnCounter % bombEveryNTurns) == 0)
+        {
+            var okBomb = SpawnOneBombInEmpty();
+            if (okBomb)
+            {
+                Debug.Log($"[PressurePreferMatch] Spawned BOMB (every {bombEveryNTurns} turns).");
+                return true;
+            }
+        }
+
         // Collect all (cell,type) that would immediately explode if spawned now.
         var candidates = new List<(Vector2Int cell, int type)>();
 
@@ -486,7 +600,7 @@ public sealed class BoardController : MonoBehaviour
             m.Init(this, pick.type, pick.cell);
 
             var sr = m.GetComponent<SpriteRenderer>();
-            if (sr != null) sr.color = pick.type == 0 ? Color.white : (pick.type == 1 ? Color.gray : Color.black);
+            if (sr != null) sr.color = TypeToColor(pick.type);
 
             Debug.Log($"[PressurePreferMatch] Spawned immediate-match: type={pick.type}, cell={pick.cell}");
             return true;
@@ -510,33 +624,31 @@ public sealed class BoardController : MonoBehaviour
 
             if (!ok)
             {
-                GameOver();
+                Lose();
                 return;
             }
         }
-
-        if (exploded)
-            Debug.Log("After exploded pressure spawn, try find any match...");
     }
 
-    private void GameOver()
+    private void Lose()
     {
-        Debug.Log("GAME OVER: board full");
-        // Demo 阶段最小实现：直接重开第一局或随机局
+        Debug.Log("LOSE: turns out or board full");
+        if (losePanel != null) losePanel.SetActive(true);
+
+        // Demo 阶段最小实现：直接重开
         ClearBoard();
+        ResetRunState();
         SpawnIntroLayout();
-        //或者显示一个简单文本
     }
 
-    void Win()
+    private void Win()
     {
         Debug.Log("WIN: boss defeated");
+        if (winPanel != null) winPanel.SetActive(true);
+
         // Demo 阶段最小实现：重开一局
         ClearBoard();
-        _bossHp = Mathf.Max(1, bossMaxHp);
-        _hpText?.SetText(_bossHp.ToString());
-        _chainText?.SetText(string.Empty);
-
+        ResetRunState();
         if (useIntroLayout) SpawnIntroLayout();
         else SpawnRandomLayout();
     }
@@ -597,14 +709,15 @@ public sealed class BoardController : MonoBehaviour
         m.Init(this, type, cell);
 
         var sr = m.GetComponent<SpriteRenderer>();
-        if (sr != null) sr.color = type == 0 ? Color.white : (type == 1 ? Color.gray : Color.black);
+        if (sr != null) sr.color = TypeToColor(type);
 
         return true;
     }
 
     public bool SpawnOneRandomInEmpty_NoInstantExplode()
     {
-        // 收集所有候选（cell,type）
+        // 收集所有候选（cell,type） - normal turns must not instantly explode.
+        // Also: can inject bombs occasionally as a "tool" (but not guaranteed).
         var candidates = new List<(Vector2Int cell, int type)>();
 
         for (int x = 0; x < width; x++)
@@ -620,21 +733,76 @@ public sealed class BoardController : MonoBehaviour
             }
         }
 
+        // Optional: small chance to spawn a bomb even on normal pressure, if legal.
+        // Keep it low to avoid confusing players.
+        if (bombEveryNTurns > 0 && (Random.value < 0.08f))
+        {
+            if (SpawnOneBombInEmpty())
+                return true;
+        }
+
         if (candidates.Count == 0)
-            return false; // 没有任何“安全落子”，交给上层决定：放宽规则 or GameOver
+            return false;
 
         var pick = candidates[Random.Range(0, candidates.Count)];
         var m = Instantiate(modulePrefab);
         m.Init(this, pick.type, pick.cell);
 
-        // 颜色区分（也可以放 ModuleView）
         var sr = m.GetComponent<SpriteRenderer>();
-        if (sr != null) sr.color = pick.type == 0 ? Color.white : (pick.type == 1 ? Color.gray : Color.black);
-
+        if (sr != null) sr.color = TypeToColor(pick.type);
 
         Debug.Log($"Safe candidates: {candidates.Count}");
+        return true;
+    }
+
+    private bool SpawnOneBombInEmpty()
+    {
+        var empties = new List<Vector2Int>();
+        for (int x = 0; x < width; x++)
+        for (int y = 0; y < height; y++)
+            if (_grid[x, y] == null)
+                empties.Add(new Vector2Int(x, y));
+
+        if (empties.Count == 0) return false;
+
+        var cell = empties[Random.Range(0, empties.Count)];
+
+        var m = Instantiate(modulePrefab);
+        m.Init(this, bombTypeId, cell);
+
+        var sr = m.GetComponent<SpriteRenderer>();
+        if (sr != null) sr.color = new Color(1f, 0.35f, 0.15f, 1f); // bomb color (only here; feel free to replace)
 
         return true;
+    }
+
+    private List<Vector2Int> CollectBombCross(Vector2Int center)
+    {
+        var set = new HashSet<Vector2Int>();
+        if (!IsInside(center)) return new List<Vector2Int>(0);
+
+        // Always include center itself (bomb will be destroyed as well)
+        set.Add(center);
+
+        // Cross 4-neighbors + optional distance 2 for stronger effect
+        for (int i = 0; i < Neigh4.Length; i++)
+        {
+            var n1 = center + Neigh4[i];
+            if (IsInside(n1)) set.Add(n1);
+
+            // distance 2 (optional): uncomment if you want bigger bomb
+            // var n2 = center + Neigh4[i] * 2;
+            // if (IsInside(n2)) set.Add(n2);
+        }
+
+        // Only explode occupied cells (so we don't waste time)
+        var result = new List<Vector2Int>(set.Count);
+        foreach (var c in set)
+        {
+            if (_grid[c.x, c.y] != null)
+                result.Add(c);
+        }
+        return result;
     }
 
     public bool IsBoardFull()
@@ -645,5 +813,16 @@ public sealed class BoardController : MonoBehaviour
                 return false;
 
         return true;
+    }
+
+    private bool IsInside(Vector2Int c) => c.x >= 0 && c.x < width && c.y >= 0 && c.y < height;
+
+    private Color TypeToColor(int type)
+    {
+        if (type == 0) return Color.white;
+        if (type == 1) return Color.gray;
+        if (type == 2) return Color.black;
+        if (type == bombTypeId) return new Color(1f, 0.35f, 0.15f, 1f);
+        return Color.magenta;
     }
 }

@@ -673,12 +673,12 @@ GameObject:
   - component: {fileID: 917007959}
   - component: {fileID: 917007958}
   m_Layer: 5
-  m_Name: DamageText
+  m_Name: TurnText
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!224 &917007957
 RectTransform:
   m_ObjectHideFlags: 0
@@ -880,7 +880,13 @@ MonoBehaviour:
   useIntroLayout: 1
   _hpText: {fileID: 436652883}
   _chainText: {fileID: 1135044796}
+  _turnText: {fileID: 917007958}
+  winPanel: {fileID: 5343283837656073168, guid: 4abc78612940fe9499af717605fe26e5, type: 3}
+  losePanel: {fileID: 5343283837656073168, guid: 2ce49c2f34a6c164b8b956b0ff0f07ec, type: 3}
   bossMaxHp: 2000
+  turnsMax: 20
+  bombTypeId: 3
+  bombEveryNTurns: 5
 --- !u!114 &970692697
 MonoBehaviour:
   m_ObjectHideFlags: 0
