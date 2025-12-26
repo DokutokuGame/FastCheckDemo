@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
@@ -32,9 +33,15 @@ public sealed class BoardController : MonoBehaviour
     public bool useIntroLayout = true;
     private bool tutorialDone = true;
 
-    public TextMeshProUGUI _damageText;
-    public Action<bool> OnTurnResolved; // 参数：是否爆发
-    private int _score;
+    public TextMeshProUGUI _hpText;
+    public TextMeshProUGUI _chainText;
+
+    [Header("Goal / Boss")] public int bossMaxHp = 2000;
+    private int _bossHp;
+
+    // Turn resolve state
+    private bool _resolvingTurn;
+    public bool IsResolvingTurn => _resolvingTurn;
 
     private void Awake()
     {
@@ -44,33 +51,9 @@ public sealed class BoardController : MonoBehaviour
     }
     private void Start()
     {
-        _score = 0;
-        _damageText?.SetText(_score.ToString());
-        OnTurnResolved += exploded =>
-        {
-            // 教学关结束前，你可以先不施压，避免干扰首爆
-            if (!tutorialDone)
-            {
-                if (exploded) tutorialDone = true; // 首次爆发后进入正常循环
-                return;
-            }
-
-            // ✅ 结算点1：回合结束就检查满盘
-            if (IsBoardFull())
-            {
-                GameOver();
-                return;
-            }
-
-            ApplyPressure(exploded);
-
-            // ✅ 结算点2：施压生成后再检查一次
-            if (IsBoardFull())
-            {
-                GameOver();
-                return;
-            }
-        };
+        _bossHp = Mathf.Max(1, bossMaxHp);
+        _hpText?.SetText(_bossHp.ToString());
+        _chainText?.SetText(string.Empty);
 
         if (useIntroLayout) SpawnIntroLayout();
         else SpawnRandomLayout(); // 你原来的随机生成
@@ -140,28 +123,138 @@ public sealed class BoardController : MonoBehaviour
         _grid[cell.x, cell.y] = null;
     }
 
-    public bool ResolveChainsFrom(Vector2Int startCell)
+    public void ResolveChainsFrom(Vector2Int placedCell)
     {
-        var start = _grid[startCell.x, startCell.y];
-        if (start == null)
+        if (_resolvingTurn) return;
+        StartCoroutine(ResolveTurnRoutine(placedCell));
+    }
+
+    private IEnumerator ResolveTurnRoutine(Vector2Int placedCell)
+    {
+        _resolvingTurn = true;
+        _chainText?.SetText(string.Empty);
+
+        // Step 1: 仅放置点触发首爆（规则更清晰）
+        if (TryCollectMatchAt(placedCell, out var cluster))
         {
-            OnTurnResolved?.Invoke(false);
-            return false;
+            // 教学模式：首爆后再进入正常循环
+            if (!tutorialDone) tutorialDone = true;
+
+            int chainIndex = 0;
+
+            while (cluster != null && cluster.Count >= 3)
+            {
+                chainIndex++;
+
+                int baseDmg = ComputeDamage(cluster.Count);
+                float chainMul = GetChainMultiplier(chainIndex);
+                int finalDmg = Mathf.RoundToInt(baseDmg * chainMul);
+
+                ApplyBossDamage(finalDmg);
+                _chainText?.SetText(chainIndex >= 2 ? $"x{chainIndex}" : string.Empty);
+
+                yield return ExplodeRoutine(cluster);
+
+                // 爆炸后施压生成（更容易形成连锁）
+                if (tutorialDone)
+                {
+                    ApplyPressure(true);
+                    if (IsBoardFull())
+                    {
+                        GameOver();
+                        _resolvingTurn = false;
+                        yield break;
+                    }
+                }
+
+                // Step 2: 连消从全盘找任意直线匹配（不做掉落也可成立）
+                if (!TryFindBestAnyMatch(out cluster))
+                    break;
+            }
+
+            // 回合结束胜负判定
+            if (_bossHp <= 0)
+            {
+                Win();
+                _resolvingTurn = false;
+                yield break;
+            }
+
+            _resolvingTurn = false;
+            yield break;
         }
 
-        int type = start.TypeId;
-        var cluster = CollectLineMatches(startCell, type);
-        // cluster = FloodFillSameType(startCell, type);
-
-        if (cluster.Count >= 3)
+        // 没有首爆：回合结束施压（更强，制造压力）
+        if (tutorialDone)
         {
-            int dmg = ComputeDamage(cluster.Count);
-            StartCoroutine(ExplodeRoutine(cluster, dmg, true));
+            ApplyPressure(false);
+            if (IsBoardFull())
+            {
+                GameOver();
+                _resolvingTurn = false;
+                yield break;
+            }
+        }
+
+        _resolvingTurn = false;
+    }
+
+    private float GetChainMultiplier(int chainIndex)
+    {
+        // 1:1.0, 2:1.5, 3:2.0, 4+:2.5...
+        if (chainIndex <= 1) return 1f;
+        return 1f + 0.5f * (chainIndex - 1);
+    }
+
+    private void ApplyBossDamage(int dmg)
+    {
+        if (dmg <= 0) return;
+        _bossHp = Mathf.Max(0, _bossHp - dmg);
+        _hpText?.SetText(_bossHp.ToString());
+        Debug.Log($"Damage {dmg}, BossHP={_bossHp}");
+    }
+
+    private bool TryCollectMatchAt(Vector2Int cell, out List<Vector2Int> cluster)
+    {
+        cluster = null;
+
+        if (cell.x < 0 || cell.y < 0 || cell.x >= width || cell.y >= height)
+            return false;
+
+        var start = _grid[cell.x, cell.y];
+        if (start == null) return false;
+
+        int type = start.TypeId;
+        var c = CollectLineMatches(cell, type);
+        if (c.Count >= 3)
+        {
+            cluster = c;
             return true;
         }
 
-        OnTurnResolved?.Invoke(false);
         return false;
+    }
+
+    private bool TryFindBestAnyMatch(out List<Vector2Int> best)
+    {
+        best = null;
+        int bestCount = 0;
+
+        for (int x = 0; x < width; x++)
+        for (int y = 0; y < height; y++)
+        {
+            var m = _grid[x, y];
+            if (m == null) continue;
+
+            var c = CollectLineMatches(new Vector2Int(x, y), m.TypeId);
+            if (c.Count >= 3 && c.Count > bestCount)
+            {
+                bestCount = c.Count;
+                best = c;
+            }
+        }
+
+        return best != null;
     }
     // 直线消除
     private List<Vector2Int> CollectLineMatches(Vector2Int origin, int type)
@@ -256,7 +349,7 @@ public sealed class BoardController : MonoBehaviour
         return Mathf.RoundToInt(baseDamage * mult);
     }
     
-    private System.Collections.IEnumerator ExplodeRoutine(List<Vector2Int> cells, int damage, bool exploded)
+    private System.Collections.IEnumerator ExplodeRoutine(List<Vector2Int> cells)
     {
         for (int i = 0; i < cells.Count; i++)
         {
@@ -271,14 +364,7 @@ public sealed class BoardController : MonoBehaviour
             yield return new WaitForSeconds(explodeDelay);
         }
 
-        // TODO: 伤害文字/音效
-        Debug.Log($"爆发! Count={cells.Count}, Damage={damage}");
-        _score += damage;
-        _damageText?.SetText(_score.ToString());
         SimpleCameraShake.Instance?.Shake(0.15f, 0.25f);
-
-        // 协程末尾才算“回合结束”
-        OnTurnResolved?.Invoke(exploded);
     }
 
     private void OnDrawGizmos()
@@ -383,6 +469,19 @@ public sealed class BoardController : MonoBehaviour
         SpawnIntroLayout(); 
         //或者显示一个简单文本
     }
+    void Win()
+    {
+        Debug.Log("WIN: boss defeated");
+        // Demo 阶段最小实现：重开一局
+        ClearBoard();
+        _bossHp = Mathf.Max(1, bossMaxHp);
+        _hpText?.SetText(_bossHp.ToString());
+        _chainText?.SetText(string.Empty);
+
+        if (useIntroLayout) SpawnIntroLayout();
+        else SpawnRandomLayout();
+    }
+
     private List<Vector2Int> CollectLineMatches_Virtual(Vector2Int origin, int type, Vector2Int virtualCell)
     {
         bool IsSame(int x, int y)

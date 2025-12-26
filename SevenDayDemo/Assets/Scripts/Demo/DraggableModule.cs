@@ -38,6 +38,7 @@ public sealed class DraggableModule : MonoBehaviour
         FakeDragIntroLoop.Instance?.InterruptForUserDrag(transform);
         
         if (_board == null) return;
+        if (_board.IsResolvingTurn) return;
         _dragging = true;
 
         _startPos = transform.position;
