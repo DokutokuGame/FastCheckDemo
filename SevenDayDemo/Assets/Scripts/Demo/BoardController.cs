@@ -46,9 +46,10 @@ public sealed class BoardController : MonoBehaviour
     private void Awake()
     {
         _grid = new DraggableModule[width, height];
-        
+
         InitCell();
     }
+
     private void Start()
     {
         _bossHp = Mathf.Max(1, bossMaxHp);
@@ -58,6 +59,7 @@ public sealed class BoardController : MonoBehaviour
         if (useIntroLayout) SpawnIntroLayout();
         else SpawnRandomLayout(); // 你原来的随机生成
     }
+
     //暂时不用
     private void SpawnRandomLayout()
     {
@@ -256,6 +258,7 @@ public sealed class BoardController : MonoBehaviour
 
         return best != null;
     }
+
     // 直线消除
     private List<Vector2Int> CollectLineMatches(Vector2Int origin, int type)
     {
@@ -270,6 +273,7 @@ public sealed class BoardController : MonoBehaviour
             if (m == null || m.TypeId != type) break;
             horiz.Add(new Vector2Int(x, origin.y));
         }
+
         // 向右
         for (int x = origin.x + 1; x < width; x++)
         {
@@ -289,6 +293,7 @@ public sealed class BoardController : MonoBehaviour
             if (m == null || m.TypeId != type) break;
             vert.Add(new Vector2Int(origin.x, y));
         }
+
         // 向上
         for (int y = origin.y + 1; y < height; y++)
         {
@@ -299,15 +304,19 @@ public sealed class BoardController : MonoBehaviour
 
         // 只有“同一直线连续 >=3”才算
         bool horizOk = horiz.Count >= 3;
-        bool vertOk  = vert.Count >= 3;
+        bool vertOk = vert.Count >= 3;
 
         if (!horizOk && !vertOk)
             return new List<Vector2Int>(0);
 
         // 允许交叉：横线 + 竖线并集
         var set = new HashSet<Vector2Int>();
-        if (horizOk) for (int i = 0; i < horiz.Count; i++) set.Add(horiz[i]);
-        if (vertOk)  for (int i = 0; i < vert.Count; i++)  set.Add(vert[i]);
+        if (horizOk)
+            for (int i = 0; i < horiz.Count; i++)
+                set.Add(horiz[i]);
+        if (vertOk)
+            for (int i = 0; i < vert.Count; i++)
+                set.Add(vert[i]);
 
         return new List<Vector2Int>(set);
     }
@@ -348,7 +357,7 @@ public sealed class BoardController : MonoBehaviour
         float mult = damageCurve.Evaluate(count);
         return Mathf.RoundToInt(baseDamage * mult);
     }
-    
+
     private System.Collections.IEnumerator ExplodeRoutine(List<Vector2Int> cells)
     {
         for (int i = 0; i < cells.Count; i++)
@@ -378,6 +387,7 @@ public sealed class BoardController : MonoBehaviour
             Gizmos.DrawWireCube(p, new Vector3(cellSize * 0.95f, cellSize * 0.95f, 0.01f));
         }
     }
+
     private void InitCell()
     {
         if (cellPrefab == null) return;
@@ -445,30 +455,79 @@ public sealed class BoardController : MonoBehaviour
         introTargetCell = new Vector2Int(2, 2);
     }
 
+
+    /// <summary>
+    /// Pressure spawn used during chain resolution: prefer spawning a piece that immediately creates a line match (>=3).
+    /// This is what makes "chain reactions" reliably visible in a demo, without affecting normal (non-exploded) turns.
+    /// If no immediate-match candidate exists, fallback to a fully random spawn (allowing instant explode).
+    /// </summary>
+    private bool SpawnOnePressurePreferMatch()
+    {
+        // Collect all (cell,type) that would immediately explode if spawned now.
+        var candidates = new List<(Vector2Int cell, int type)>();
+
+        for (int x = 0; x < width; x++)
+        for (int y = 0; y < height; y++)
+        {
+            if (_grid[x, y] != null) continue;
+            var cell = new Vector2Int(x, y);
+
+            for (int type = 0; type < 3; type++)
+            {
+                if (WouldExplodeIfSpawn(cell, type))
+                    candidates.Add((cell, type));
+            }
+        }
+
+        if (candidates.Count > 0)
+        {
+            var pick = candidates[Random.Range(0, candidates.Count)];
+            var m = Instantiate(modulePrefab);
+            m.Init(this, pick.type, pick.cell);
+
+            var sr = m.GetComponent<SpriteRenderer>();
+            if (sr != null) sr.color = pick.type == 0 ? Color.white : (pick.type == 1 ? Color.gray : Color.black);
+
+            Debug.Log($"[PressurePreferMatch] Spawned immediate-match: type={pick.type}, cell={pick.cell}");
+            return true;
+        }
+
+        // No immediate-match candidate: fallback to random spawn (still allowing instant explode).
+        var ok = SpawnOneRandomInEmpty_AllowInstantExplode();
+        Debug.Log($"[PressurePreferMatch] No immediate-match candidates, fallback random ok={ok}");
+        return ok;
+    }
+
     public void ApplyPressure(bool exploded)
     {
         int spawnCount = exploded ? 1 : 2;
 
         for (int i = 0; i < spawnCount; i++)
         {
-            if (!SpawnOneRandomInEmpty_NoInstantExplode())
+            bool ok = exploded
+                ? SpawnOnePressurePreferMatch()
+                : SpawnOneRandomInEmpty_NoInstantExplode();
+
+            if (!ok)
             {
-                // 关键决策：没有安全落子时怎么办？
-                // Demo 推荐：直接 GameOver（规则清晰，玩家不会困惑）
                 GameOver();
                 return;
             }
         }
+
+        if (exploded)
+            Debug.Log("After exploded pressure spawn, try find any match...");
     }
 
     private void GameOver()
     {
         Debug.Log("GAME OVER: board full");
         // Demo 阶段最小实现：直接重开第一局或随机局
-        ClearBoard(); 
-        SpawnIntroLayout(); 
+        ClearBoard();
+        SpawnIntroLayout();
         //或者显示一个简单文本
     }
+
     void Win()
     {
         Debug.Log("WIN: boss defeated");
@@ -500,19 +559,47 @@ public sealed class BoardController : MonoBehaviour
         for (int y = origin.y + 1; y < height && IsSame(origin.x, y); y++) vert.Add(new Vector2Int(origin.x, y));
 
         bool horizOk = horiz.Count >= 3;
-        bool vertOk  = vert.Count >= 3;
+        bool vertOk = vert.Count >= 3;
         if (!horizOk && !vertOk) return new List<Vector2Int>(0);
 
         var set = new HashSet<Vector2Int>();
-        if (horizOk) for (int i = 0; i < horiz.Count; i++) set.Add(horiz[i]);
-        if (vertOk)  for (int i = 0; i < vert.Count; i++)  set.Add(vert[i]);
+        if (horizOk)
+            for (int i = 0; i < horiz.Count; i++)
+                set.Add(horiz[i]);
+        if (vertOk)
+            for (int i = 0; i < vert.Count; i++)
+                set.Add(vert[i]);
         return new List<Vector2Int>(set);
     }
+
     private bool WouldExplodeIfSpawn(Vector2Int cell, int type)
     {
         if (_grid[cell.x, cell.y] != null) return true; // 不是空格就别生成
         var matched = CollectLineMatches_Virtual(cell, type, cell);
         return matched.Count >= 3;
+    }
+
+    public bool SpawnOneRandomInEmpty_AllowInstantExplode()
+    {
+        var empties = new List<Vector2Int>();
+
+        for (int x = 0; x < width; x++)
+        for (int y = 0; y < height; y++)
+            if (_grid[x, y] == null)
+                empties.Add(new Vector2Int(x, y));
+
+        if (empties.Count == 0) return false;
+
+        var cell = empties[Random.Range(0, empties.Count)];
+        int type = Random.Range(0, 3);
+
+        var m = Instantiate(modulePrefab);
+        m.Init(this, type, cell);
+
+        var sr = m.GetComponent<SpriteRenderer>();
+        if (sr != null) sr.color = type == 0 ? Color.white : (type == 1 ? Color.gray : Color.black);
+
+        return true;
     }
 
     public bool SpawnOneRandomInEmpty_NoInstantExplode()
@@ -539,13 +626,17 @@ public sealed class BoardController : MonoBehaviour
         var pick = candidates[Random.Range(0, candidates.Count)];
         var m = Instantiate(modulePrefab);
         m.Init(this, pick.type, pick.cell);
-        
+
         // 颜色区分（也可以放 ModuleView）
         var sr = m.GetComponent<SpriteRenderer>();
         if (sr != null) sr.color = pick.type == 0 ? Color.white : (pick.type == 1 ? Color.gray : Color.black);
-        
+
+
+        Debug.Log($"Safe candidates: {candidates.Count}");
+
         return true;
     }
+
     public bool IsBoardFull()
     {
         for (int x = 0; x < width; x++)
