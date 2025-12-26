@@ -28,6 +28,7 @@ public sealed class BoardController : MonoBehaviour
     public DraggableModule introHintModule;
     public Vector2Int introTargetCell = new Vector2Int(2, 2); // 缺口
     public DraggableModule modulePrefab;
+    public GameObject cellPrefab;
     public bool useIntroLayout = true;
     private bool tutorialDone = true;
 
@@ -38,6 +39,8 @@ public sealed class BoardController : MonoBehaviour
     private void Awake()
     {
         _grid = new DraggableModule[width, height];
+        
+        InitCell();
     }
     private void Start()
     {
@@ -252,27 +255,7 @@ public sealed class BoardController : MonoBehaviour
         float mult = damageCurve.Evaluate(count);
         return Mathf.RoundToInt(baseDamage * mult);
     }
-
-    private System.Collections.IEnumerator ExplodeRoutine(List<Vector2Int> cells, int damage)
-    {
-        // “吵”：先轻微延迟+逐个清除（带节奏），再给伤害与抖动
-        for (int i = 0; i < cells.Count; i++)
-        {
-            var c = cells[i];
-            var m = _grid[c.x, c.y];
-            if (m != null)
-            {
-                ClearCell(c);
-                Destroy(m.gameObject);
-            }
-
-            yield return new WaitForSeconds(explodeDelay);
-        }
-
-        // 如果你有 Cinemachine，可在这里触发 Impulse；没有也能先用简易抖动
-        SimpleCameraShake.Instance?.Shake(0.15f, 0.25f);
-    }
-
+    
     private System.Collections.IEnumerator ExplodeRoutine(List<Vector2Int> cells, int damage, bool exploded)
     {
         for (int i = 0; i < cells.Count; i++)
@@ -307,6 +290,18 @@ public sealed class BoardController : MonoBehaviour
         {
             Vector3 p = new Vector3(origin.x + x * cellSize, origin.y + y * cellSize, 0);
             Gizmos.DrawWireCube(p, new Vector3(cellSize * 0.95f, cellSize * 0.95f, 0.01f));
+        }
+    }
+    private void InitCell()
+    {
+        if (cellPrefab == null) return;
+        for (int x = 0; x < width; x++)
+        for (int y = 0; y < height; y++)
+        {
+            var go = Instantiate(cellPrefab, transform);
+            Vector3 p = new Vector3(origin.x + x * cellSize, origin.y + y * cellSize, 0);
+            go.transform.position = p;
+            go.transform.localScale = new Vector3(cellSize * 0.95f, cellSize * 0.95f, 0.01f);
         }
     }
 
@@ -384,7 +379,9 @@ public sealed class BoardController : MonoBehaviour
     {
         Debug.Log("GAME OVER: board full");
         // Demo 阶段最小实现：直接重开第一局或随机局
-        // ClearBoard(); SpawnIntroLayout(); 或者显示一个简单文本
+        ClearBoard(); 
+        SpawnIntroLayout(); 
+        //或者显示一个简单文本
     }
     private List<Vector2Int> CollectLineMatches_Virtual(Vector2Int origin, int type, Vector2Int virtualCell)
     {
