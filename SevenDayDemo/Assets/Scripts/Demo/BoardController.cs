@@ -45,6 +45,27 @@ public sealed class BoardController : MonoBehaviour
     [Header("Goal / Turns")] public int turnsMax = 20;
     private int _turnsLeft;
 
+    [Header("Mechanics Tuning")]
+    [Tooltip("Bomb base damage multiplier applied to the number of cells it clears (before chain reactions).")]
+    [Range(0f, 1f)]
+    public float bombBaseDamageMultiplier = 0.6f;
+
+    [Tooltip("All-clear bonus damage (applied when the board becomes empty at end of a resolution).")]
+    public int allClearBonusDamage = 300;
+
+    [Tooltip("All-clear bonus bombs (+stock, capped by bombStockMax).")]
+    public int allClearBonusBombs = 1;
+
+    [Tooltip("All-clear bonus turns (+1 recommended).")]
+    public int allClearBonusTurns = 1;
+
+    [Tooltip("If remaining piece count is <= this value after a resolution, auto-refill to avoid a dead board.")]
+    public int lowBoardRefillThreshold = 1;
+
+    [Tooltip("How many safe pieces to spawn when low-board refill triggers.")]
+    public int lowBoardRefillCount = 3;
+
+
     [Header("Bomb Stock (off-board)")] [Tooltip("Maximum number of bombs you can store off-board.")]
     public int bombStockMax = 3;
 
@@ -262,16 +283,12 @@ public sealed class BoardController : MonoBehaviour
                     break;
             }
 
-            // 胜利判定
-            if (_bossHp <= 0)
-            {
-                Win();
-                _resolvingTurn = false;
-                yield break;
-            }
+            // 胜负判定会在回合尾统一处理
 
-            // 回合消耗
-            ConsumeTurnAndCheckEnd();
+            // 回合消耗（先扣回合，再结算清屏/补牌奖励，最后判输赢）
+            ConsumeTurnOnly();
+            ApplyEndOfResolutionBonuses();
+            CheckEnd();
             _resolvingTurn = false;
             yield break;
         }
@@ -288,25 +305,34 @@ public sealed class BoardController : MonoBehaviour
             }
         }
 
-        ConsumeTurnAndCheckEnd();
+        ConsumeTurnOnly();
+        ApplyEndOfResolutionBonuses();
+        CheckEnd();
         _resolvingTurn = false;
     }
 
-    private void ConsumeTurnAndCheckEnd()
+    private void ConsumeTurnOnly()
     {
-        // Tutorial 期间如果你希望不扣回合，可在这里加条件
         _turnCounter++;
         _turnsLeft = Mathf.Max(0, _turnsLeft - 1);
         _turnText?.SetText(_turnsLeft.ToString());
+    }
 
-        // 先判胜
+    private void AddTurns(int delta)
+    {
+        if (delta <= 0) return;
+        _turnsLeft += delta;
+        _turnText?.SetText(_turnsLeft.ToString());
+    }
+
+    private void CheckEnd()
+    {
         if (_bossHp <= 0)
         {
             Win();
             return;
         }
 
-        // 再判负：回合耗尽
         if (_turnsLeft <= 0)
         {
             Lose();
@@ -318,6 +344,63 @@ public sealed class BoardController : MonoBehaviour
         // 1:1.0, 2:1.5, 3:2.0, 4+:2.5...
         if (chainIndex <= 1) return 1f;
         return 1f + 0.5f * (chainIndex - 1);
+    }
+
+    private int CountPieces()
+    {
+        int count = 0;
+        for (int x = 0; x < width; x++)
+        for (int y = 0; y < height; y++)
+            if (_grid[x, y] != null)
+                count++;
+        return count;
+    }
+
+    /// <summary>
+    /// End-of-resolution bonuses:
+    /// - All Clear (board empty): bonus damage + bomb stock + turns.
+    /// - Low-board refill (<= threshold): add a few safe pieces so the board isn't dead.
+    /// </summary>
+    private void ApplyEndOfResolutionBonuses()
+    {
+        int pieces = CountPieces();
+
+        if (pieces == 0)
+        {
+            if (allClearBonusDamage > 0)
+            {
+                ApplyBossDamage(allClearBonusDamage);
+                Debug.Log($"[AllClear] BonusDamage={allClearBonusDamage}");
+            }
+
+            if (allClearBonusBombs > 0)
+            {
+                int before = bombStock;
+                bombStock = Mathf.Min(bombStockMax, bombStock + allClearBonusBombs);
+                if (bombStock != before) RefreshBombUI();
+                Debug.Log($"[AllClear] Bombs +{allClearBonusBombs} (now {bombStock}/{bombStockMax})");
+            }
+
+            if (allClearBonusTurns > 0)
+            {
+                AddTurns(allClearBonusTurns);
+                Debug.Log($"[AllClear] Turns +{allClearBonusTurns} (now {_turnsLeft})");
+            }
+        }
+
+        pieces = CountPieces();
+        if (pieces <= lowBoardRefillThreshold)
+        {
+            for (int i = 0; i < lowBoardRefillCount; i++)
+            {
+                if (!SpawnOneRandomInEmpty_NoInstantExplode())
+                {
+                    Lose();
+                    return;
+                }
+            }
+            Debug.Log($"[LowBoardRefill] pieces={pieces} -> +{lowBoardRefillCount} safe spawns");
+        }
     }
 
     private void ApplyBossDamage(int dmg)
@@ -621,7 +704,13 @@ public sealed class BoardController : MonoBehaviour
 
         var cluster = CollectBombCross(cell);
         if (cluster.Count > 0)
+        {
+            int bombBase = Mathf.RoundToInt(ComputeDamage(Mathf.Max(3, cluster.Count)) * bombBaseDamageMultiplier);
+            ApplyBossDamage(bombBase);
+            Debug.Log($"[Bomb] BaseDamage={bombBase} (cells={cluster.Count}, mul={bombBaseDamageMultiplier:0.00})");
+
             yield return ExplodeRoutine(cluster);
+        }
 
         // Keep tempo: bomb use triggers a light chain-pressure spawn
         ApplyPressure(true);
@@ -657,16 +746,12 @@ public sealed class BoardController : MonoBehaviour
             }
         }
 
-        if (_bossHp <= 0)
-        {
-            Win();
-            _resolvingTurn = false;
-            yield break;
-        }
-
-        // Per your choice: bomb use does NOT consume a turn by default.
+        // Bomb use does NOT consume a turn by default.
         if (bombUseConsumesTurn)
-            ConsumeTurnAndCheckEnd();
+            ConsumeTurnOnly();
+
+        ApplyEndOfResolutionBonuses();
+        CheckEnd();
 
         _resolvingTurn = false;
     }
