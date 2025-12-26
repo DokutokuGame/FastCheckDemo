@@ -36,13 +36,21 @@ public sealed class DraggableModule : MonoBehaviour
     private void OnMouseDown()
     {
         FakeDragIntroLoop.Instance?.InterruptForUserDrag(transform);
-        
+
         if (_board == null) return;
+
+        // 回合结算中 / 炸弹瞄准模式下，禁止拖拽，避免状态交错
         if (_board.IsResolvingTurn) return;
+        if (_board.IsBombMode) return;
+
         _dragging = true;
 
         _startPos = transform.position;
         _startCell = CurrentCell;
+
+        // 避免拖拽开始时的缩放 Tween 与拖拽冲突
+        transform.DOKill(complete: false);
+        transform.localScale = Vector3.one;
 
         var mouseWorld = GetMouseWorld();
         _dragOffset = transform.position - mouseWorld;
@@ -81,7 +89,7 @@ public sealed class DraggableModule : MonoBehaviour
             if (_board.IsCellEmpty(cell))
             {
                 _board.PlaceModule(this, cell);
-                _board.ResolveChainsFrom(cell); // 回合结算（H 施压）由 Board 处理
+                _board.ResolveChainsFrom(cell); // 回合结算由 Board 处理
                 return;
             }
         }
@@ -95,13 +103,22 @@ public sealed class DraggableModule : MonoBehaviour
         }
     }
 
-    void OnMouseEnter()
+    private void OnMouseEnter()
     {
+        // 炸弹模式 / 结算中不要做 hover 动画，避免误导玩家
+        if (_board != null && (_board.IsResolvingTurn || _board.IsBombMode)) return;
+        if (_dragging) return;
+
+        transform.DOKill(complete: false);
         transform.DOScale(1.08f, 0.1f);
     }
 
-    void OnMouseExit()
+    private void OnMouseExit()
     {
+        if (_board != null && (_board.IsResolvingTurn || _board.IsBombMode)) return;
+        if (_dragging) return;
+
+        transform.DOKill(complete: false);
         transform.DOScale(1f, 0.1f);
     }
 
@@ -112,5 +129,9 @@ public sealed class DraggableModule : MonoBehaviour
         return Camera.main.ScreenToWorldPoint(p);
     }
 
-    private static bool IsInBoard(Vector2Int c) => c.x >= 0 && c.y >= 0;
+    private bool IsInBoard(Vector2Int c)
+    {
+        if (_board == null) return false;
+        return c.x >= 0 && c.y >= 0 && c.x < _board.width && c.y < _board.height;
+    }
 }

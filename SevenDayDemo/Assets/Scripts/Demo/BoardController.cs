@@ -7,14 +7,12 @@ using Random = UnityEngine.Random;
 
 public sealed class BoardController : MonoBehaviour
 {
-    [Header("Board")]
-    public int width = 5;
+    [Header("Board")] public int width = 5;
     public int height = 5;
     public float cellSize = 1.2f;
     public Vector2 origin = new Vector2(-2.4f, -2.4f); // 左下角世界坐标
 
-    [Header("Explosion / Damage")]
-    public int baseDamage = 100;
+    [Header("Explosion / Damage")] public int baseDamage = 100;
     public AnimationCurve damageCurve = AnimationCurve.Linear(3, 1, 12, 6); // count -> multiplier
     public float explodeDelay = 0.05f;
 
@@ -35,31 +33,42 @@ public sealed class BoardController : MonoBehaviour
     public bool useIntroLayout = true;
     private bool tutorialDone = true;
 
-    [Header("UI (optional)")]
-    public TextMeshProUGUI _hpText;
+    [Header("UI (optional)")] public TextMeshProUGUI _hpText;
     public TextMeshProUGUI _chainText;
     public TextMeshProUGUI _turnText;
     public GameObject winPanel;
     public GameObject losePanel;
 
-    [Header("Goal / Boss")]
-    public int bossMaxHp = 2000;
+    [Header("Goal / Boss")] public int bossMaxHp = 2000;
     private int _bossHp;
 
-    [Header("Goal / Turns")]
-    public int turnsMax = 20;
+    [Header("Goal / Turns")] public int turnsMax = 20;
     private int _turnsLeft;
 
-    [Header("Special Modules")]
-    [Tooltip("TypeId==3 will be treated as Bomb (cross clear).")]
-    public int bombTypeId = 3;
+    [Header("Bomb Stock (off-board)")] [Tooltip("Maximum number of bombs you can store off-board.")]
+    public int bombStockMax = 3;
 
-    [Tooltip("Every N turns (player placements), guarantee one bomb spawn on the next pressure spawn. Set 0 to disable.")]
+    [Tooltip("Current stored bombs.")] [SerializeField]
+    private int bombStock = 0;
+
+    [Tooltip("Optional UI text: Bomb xN/MAX")]
+    public TextMeshProUGUI bombStockText;
+
+    [Tooltip("Press this key to toggle bomb targeting mode (demo).")]
+    public KeyCode bombHotkey = KeyCode.B;
+
+    [Tooltip("While in bomb mode, left click a cell to bomb it. Bomb use does NOT consume a turn (per your choice).")]
+    public bool bombUseConsumesTurn = false;
+
+    private bool _bombMode = false;
+
+    [Header("Bomb Reward")] [Tooltip("Every N turns (player placements), award +1 bomb stock at chain-pressure. Set 0 to disable.")]
     public int bombEveryNTurns = 5;
 
     // Turn resolve state
     private bool _resolvingTurn;
     public bool IsResolvingTurn => _resolvingTurn;
+    public bool IsBombMode => _bombMode;
 
     private int _turnCounter; // number of player placements resolved (excluding tutorial guard)
 
@@ -77,6 +86,34 @@ public sealed class BoardController : MonoBehaviour
         else SpawnRandomLayout(); // 你原来的随机生成
     }
 
+
+    private void Update()
+    {
+        // Demo input for off-board bombs. You can replace this with UI button flow later.
+        if (Input.GetKeyDown(bombHotkey))
+        {
+            _bombMode = !_bombMode;
+            Debug.Log(_bombMode ? "[BombMode] ON" : "[BombMode] OFF");
+        }
+
+        if (_bombMode && Input.GetMouseButtonDown(0))
+        {
+            // Ignore when resolving (prevents state overlap)
+            if (_resolvingTurn) return;
+
+            Vector3 world = Camera.main != null ? Camera.main.ScreenToWorldPoint(Input.mousePosition) : Input.mousePosition;
+            world.z = 0;
+
+            if (TryWorldToCell(world, out var cell))
+            {
+                TryUseBombAt(cell);
+                // Auto-exit bomb mode after use attempt (feels better for demo)
+                _bombMode = false;
+            }
+        }
+    }
+
+
     private void ResetRunState()
     {
         _bossHp = Mathf.Max(1, bossMaxHp);
@@ -87,9 +124,20 @@ public sealed class BoardController : MonoBehaviour
         _turnText?.SetText(_turnsLeft.ToString());
         _chainText?.SetText(string.Empty);
 
+        bombStock = 0;
+        RefreshBombUI();
+
         if (winPanel != null) winPanel.SetActive(false);
         if (losePanel != null) losePanel.SetActive(false);
     }
+
+
+    private void RefreshBombUI()
+    {
+        if (bombStockText != null)
+            bombStockText.SetText($"Bomb x{bombStock}/{bombStockMax}");
+    }
+
 
     //暂时不用
     private void SpawnRandomLayout()
@@ -175,72 +223,6 @@ public sealed class BoardController : MonoBehaviour
         }
 
         var placed = _grid[placedCell.x, placedCell.y];
-
-        // --- Step 0: Bomb 直接触发首爆（不依赖直线 3+） ---
-        if (placed != null && placed.TypeId == bombTypeId)
-        {
-            if (!tutorialDone) tutorialDone = true;
-
-            int chainIndex = 1;
-
-            var bombCluster = CollectBombCross(placedCell);
-            if (bombCluster.Count > 0)
-            {
-                int baseDmg = ComputeDamage(Mathf.Max(3, bombCluster.Count)); // Bomb 至少按 3 的档位给伤害
-                float chainMul = GetChainMultiplier(chainIndex);
-                int finalDmg = Mathf.RoundToInt(baseDmg * chainMul);
-
-                ApplyBossDamage(finalDmg);
-                _chainText?.SetText(string.Empty);
-
-                yield return ExplodeRoutine(bombCluster);
-
-                if (tutorialDone)
-                {
-                    ApplyPressure(true);
-                    if (IsBoardFull())
-                    {
-                        Lose();
-                        _resolvingTurn = false;
-                        yield break;
-                    }
-                }
-
-                // Bomb 后也允许继续找连锁
-                List<Vector2Int> cluster;
-                while (TryFindBestAnyMatch(out cluster))
-                {
-                    chainIndex++;
-
-                    int baseDmg2 = ComputeDamage(cluster.Count);
-                    float chainMul2 = GetChainMultiplier(chainIndex);
-                    int finalDmg2 = Mathf.RoundToInt(baseDmg2 * chainMul2);
-
-                    ApplyBossDamage(finalDmg2);
-                    _chainText?.SetText($"x{chainIndex}");
-
-                    yield return ExplodeRoutine(cluster);
-
-                    if (tutorialDone)
-                    {
-                        ApplyPressure(true);
-                        if (IsBoardFull())
-                        {
-                            Lose();
-                            _resolvingTurn = false;
-                            yield break;
-                        }
-                    }
-                }
-
-                // 回合消耗（Bomb 也算一回合）
-                ConsumeTurnAndCheckEnd();
-                _resolvingTurn = false;
-                yield break;
-            }
-
-            // Bomb 没清到任何东西（极少见）：当作普通回合
-        }
 
         // --- Step 1: 仅放置点触发首爆（规则更清晰） ---
         if (TryCollectMatchAt(placedCell, out var firstCluster))
@@ -357,7 +339,6 @@ public sealed class BoardController : MonoBehaviour
         if (start == null) return false;
 
         // Special types don't participate in line matches
-        if (start.TypeId == bombTypeId) return false;
 
         int type = start.TypeId;
         var c = CollectLineMatches(cell, type);
@@ -380,7 +361,6 @@ public sealed class BoardController : MonoBehaviour
         {
             var m = _grid[x, y];
             if (m == null) continue;
-            if (m.TypeId == bombTypeId) continue;
 
             var c = CollectLineMatches(new Vector2Int(x, y), m.TypeId);
             if (c.Count >= 3 && c.Count > bestCount)
@@ -566,22 +546,31 @@ public sealed class BoardController : MonoBehaviour
     /// </summary>
     private bool SpawnOnePressurePreferMatch()
     {
-        // Bomb injection (deterministic): once every N turns, guarantee a bomb on chain-pressure.
+        // Bomb stock award (deterministic): once every N turns, add +1 bomb to off-board stock during chain-pressure.
         if (bombEveryNTurns > 0 && _turnCounter > 0 && (_turnCounter % bombEveryNTurns) == 0)
         {
-            var okBomb = SpawnOneBombInEmpty();
-            if (okBomb)
+            if (bombStock < bombStockMax)
             {
-                Debug.Log($"[PressurePreferMatch] Spawned BOMB (every {bombEveryNTurns} turns).");
-                return true;
+                bombStock++;
+                RefreshBombUI();
+                Debug.Log($"[BombStock] +1 (every {bombEveryNTurns} turns). Now {bombStock}/{bombStockMax}");
+            }
+            else
+            {
+                // If stock is full, convert reward to a small fixed damage so the player doesn't feel "reward eaten".
+                ApplyBossDamage(50);
+                Debug.Log("[BombStock] Full, converted to +50 damage.");
             }
         }
 
         // Collect all (cell,type) that would immediately explode if spawned now.
         var candidates = new List<(Vector2Int cell, int type)>();
-
-        for (int x = 0; x < width; x++)
-        for (int y = 0; y < height; y++)
+        for (int x = 0;
+             x < width;
+             x++)
+        for (int y = 0;
+             y < height;
+             y++)
         {
             if (_grid[x, y] != null) continue;
             var cell = new Vector2Int(x, y);
@@ -606,10 +595,80 @@ public sealed class BoardController : MonoBehaviour
             return true;
         }
 
-        // No immediate-match candidate: fallback to random spawn (still allowing instant explode).
+// No immediate-match candidate: fallback to random spawn (still allowing instant explode).
         var ok = SpawnOneRandomInEmpty_AllowInstantExplode();
         Debug.Log($"[PressurePreferMatch] No immediate-match candidates, fallback random ok={ok}");
         return ok;
+    }
+
+
+    public void TryUseBombAt(Vector2Int cell)
+    {
+        if (_resolvingTurn) return;
+        if (bombStock <= 0) return;
+        if (!IsInside(cell)) return;
+
+        bombStock--;
+        RefreshBombUI();
+
+        StartCoroutine(UseBombRoutine(cell));
+    }
+
+    private IEnumerator UseBombRoutine(Vector2Int cell)
+    {
+        _resolvingTurn = true;
+        _chainText?.SetText(string.Empty);
+
+        var cluster = CollectBombCross(cell);
+        if (cluster.Count > 0)
+            yield return ExplodeRoutine(cluster);
+
+        // Keep tempo: bomb use triggers a light chain-pressure spawn
+        ApplyPressure(true);
+        if (IsBoardFull())
+        {
+            Lose();
+            _resolvingTurn = false;
+            yield break;
+        }
+
+        // Continue chain reactions from any matches
+        int chainIndex = 1;
+        List<Vector2Int> next;
+        while (TryFindBestAnyMatch(out next))
+        {
+            chainIndex++;
+
+            int baseDmg = ComputeDamage(next.Count);
+            float chainMul = GetChainMultiplier(chainIndex);
+            int finalDmg = Mathf.RoundToInt(baseDmg * chainMul);
+
+            ApplyBossDamage(finalDmg);
+            _chainText?.SetText($"x{chainIndex}");
+
+            yield return ExplodeRoutine(next);
+
+            ApplyPressure(true);
+            if (IsBoardFull())
+            {
+                Lose();
+                _resolvingTurn = false;
+                yield break;
+            }
+        }
+
+        if (_bossHp <= 0)
+        {
+            Win();
+            _resolvingTurn = false;
+            yield break;
+        }
+
+        // Per your choice: bomb use does NOT consume a turn by default.
+        if (bombUseConsumesTurn)
+            ConsumeTurnAndCheckEnd();
+
+        _resolvingTurn = false;
     }
 
     public void ApplyPressure(bool exploded)
@@ -733,12 +792,21 @@ public sealed class BoardController : MonoBehaviour
             }
         }
 
-        // Optional: small chance to spawn a bomb even on normal pressure, if legal.
+        // Optional: small chance to award a bomb even on normal pressure (off-board), capped by bombStockMax.
         // Keep it low to avoid confusing players.
         if (bombEveryNTurns > 0 && (Random.value < 0.08f))
         {
-            if (SpawnOneBombInEmpty())
-                return true;
+            if (bombStock < bombStockMax)
+            {
+                bombStock++;
+                RefreshBombUI();
+                Debug.Log($"[BombStock] +1 (random). Now {bombStock}/{bombStockMax}");
+            }
+            else
+            {
+                ApplyBossDamage(25);
+                Debug.Log("[BombStock] Full (random), converted to +25 damage.");
+            }
         }
 
         if (candidates.Count == 0)
@@ -752,27 +820,6 @@ public sealed class BoardController : MonoBehaviour
         if (sr != null) sr.color = TypeToColor(pick.type);
 
         Debug.Log($"Safe candidates: {candidates.Count}");
-        return true;
-    }
-
-    private bool SpawnOneBombInEmpty()
-    {
-        var empties = new List<Vector2Int>();
-        for (int x = 0; x < width; x++)
-        for (int y = 0; y < height; y++)
-            if (_grid[x, y] == null)
-                empties.Add(new Vector2Int(x, y));
-
-        if (empties.Count == 0) return false;
-
-        var cell = empties[Random.Range(0, empties.Count)];
-
-        var m = Instantiate(modulePrefab);
-        m.Init(this, bombTypeId, cell);
-
-        var sr = m.GetComponent<SpriteRenderer>();
-        if (sr != null) sr.color = new Color(1f, 0.35f, 0.15f, 1f); // bomb color (only here; feel free to replace)
-
         return true;
     }
 
@@ -802,6 +849,7 @@ public sealed class BoardController : MonoBehaviour
             if (_grid[c.x, c.y] != null)
                 result.Add(c);
         }
+
         return result;
     }
 
@@ -822,7 +870,6 @@ public sealed class BoardController : MonoBehaviour
         if (type == 0) return Color.white;
         if (type == 1) return Color.gray;
         if (type == 2) return Color.black;
-        if (type == bombTypeId) return new Color(1f, 0.35f, 0.15f, 1f);
         return Color.magenta;
     }
 }
